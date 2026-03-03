@@ -78,4 +78,33 @@ chore: 杂务，不影响功能
 
 
 
-test branch
+---
+
+## 分支（Branch）与合并（Merge）
+
+分支 = 从主线分出去的独立开发线，改动互不影响。
+
+```
+main:        A → B → C
+                      ↘
+my-feature:            D → E  ← 在这里改代码，不影响 main
+```
+
+**常用命令：**
+```bash
+git checkout -b 分支名   # 创建并切换到新分支
+git branch               # 查看所有分支（* 表示当前所在分支）
+git checkout main        # 切回 main 分支
+git merge 分支名         # 把指定分支的改动合并进当前分支
+git branch -d 分支名     # 删除已合并的分支
+```
+
+**关键理解**：
+- 创建分支时，复制当前 main 的全部代码
+- 在分支上的改动不影响 main，完全隔离
+- PR（Pull Request）本质上就是请求别人把你的**分支**合并进他们的 **main**
+
+**真实团队开发流程：**
+```
+main（受保护）→ 每人创建 feature 分支 → 开发测试 → 发 PR → Code Review → merge 回 main
+```
