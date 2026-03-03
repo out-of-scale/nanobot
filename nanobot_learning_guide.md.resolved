@@ -1,0 +1,295 @@
+# 🐈 Nanobot 学习指南 — 上下文重置文档
+
+> **📌 如何使用本文档**：当与 AI 助手的对话上下文过长时，开启新对话，粘贴本文档内容，说明"我在学习 nanobot 项目，请根据这份指南继续帮助我"。
+
+---
+
+## 一、我的学习三大目标
+
+| 目标 | 说明 |
+|------|------|
+| **🔧 Git & GitHub** | 学习版本控制工作流、分支管理、PR、Issues 等 |
+| **🏗 项目架构** | 理解 nanobot 的整体设计思想和模块划分 |
+| **🐍 Python 语法** | 通过真实项目代码学习现代 Python 用法 |
+
+**项目本地路径**：`e:\Agent\nanobot`  
+**GitHub 地址**：[https://github.com/HKUDS/nanobot](https://github.com/HKUDS/nanobot)  
+**项目简介**：一个超轻量级（~4000 行代码）的个人 AI 助手框架，支持 Telegram、Discord、飞书、钉钉等多平台。
+
+---
+
+## 二、项目结构全图
+
+```
+nanobot/                     ← 项目根目录
+├── .git/                    ← Git 版本控制数据库（不要手动修改）
+├── .gitignore               ← 告诉 Git 哪些文件不需要跟踪
+├── .dockerignore            ← Docker 构建时忽略的文件
+├── pyproject.toml           ← 项目配置（依赖、版本、入口命令）
+├── Dockerfile               ← Docker 容器化部署配置
+├── docker-compose.yml       ← 多容器编排配置
+├── README.md                ← 项目文档（用户视角）
+├── LICENSE                  ← MIT 开源协议
+├── SECURITY.md              ← 安全政策
+├── COMMUNICATION.md         ← 社区联系方式
+├── core_agent_lines.sh      ← Shell脚本，统计核心代码行数
+├── nanobot_arch.png         ← 架构图
+│
+├── bridge/                  ← TypeScript 桥接层（WhatsApp Node.js 桥）
+│   ├── src/                 ← TypeScript 源码
+│   ├── package.json         ← Node.js 依赖配置
+│   └── tsconfig.json        ← TypeScript 编译配置
+│
+├── nanobot/                 ← Python 主包（核心代码）
+│   ├── __init__.py          ← 包入口，导出版本号
+│   ├── __main__.py          ← 允许 python -m nanobot 运行
+│   ├── agent/               ← 🧠 AI Agent 核心引擎
+│   │   ├── loop.py          ← Agent 主循环（最核心文件）
+│   │   ├── context.py       ← 上下文构建器
+│   │   ├── memory.py        ← 记忆存储与整合
+│   │   ├── skills.py        ← 技能加载器
+│   │   ├── subagent.py      ← 子 Agent 管理
+│   │   └── tools/           ← 工具集（文件/Shell/网络/MCP等）
+│   ├── channels/            ← 💬 通讯渠道（各平台适配器）
+│   │   ├── base.py          ← 渠道基类（抽象接口）
+│   │   ├── telegram.py      ← Telegram 适配器
+│   │   ├── discord.py       ← Discord 适配器
+│   │   ├── feishu.py        ← 飞书适配器
+│   │   ├── dingtalk.py      ← 钉钉适配器
+│   │   ├── slack.py         ← Slack 适配器
+│   │   ├── whatsapp.py      ← WhatsApp 适配器
+│   │   ├── qq.py            ← QQ 适配器
+│   │   ├── email.py         ← 邮件适配器
+│   │   ├── matrix.py        ← Matrix 适配器
+│   │   ├── mochat.py        ← Mochat 适配器
+│   │   └── manager.py       ← 渠道管理器
+│   ├── providers/           ← 🤖 LLM 提供商（OpenAI/Claude/DeepSeek等）
+│   │   ├── registry.py      ← 提供商注册表（单一数据源）
+│   │   ├── base.py          ← 提供商基类
+│   │   ├── litellm_provider.py    ← LiteLLM 统一接口
+│   │   ├── custom_provider.py     ← 自定义 OpenAI 兼容端点
+│   │   └── openai_codex_provider.py  ← Codex OAuth 登录
+│   ├── config/              ← ⚙️ 配置管理
+│   │   └── schema.py        ← Pydantic 配置模型（强类型验证）
+│   ├── bus/                 ← 🚌 消息总线（内部通信）
+│   ├── session/             ← 💾 会话管理
+│   ├── cron/                ← ⏰ 定时任务
+│   ├── heartbeat/           ← 💓 心跳机制
+│   ├── cli/                 ← 🖥 命令行接口
+│   ├── skills/              ← 🛠 内置技能（memory/cron/github等）
+│   ├── templates/           ← 📄 Prompt 模板（.md 文件）
+│   └── utils/               ← 🔧 工具函数
+│
+└── tests/                   ← 🧪 测试代码
+```
+
+---
+
+## 三、核心架构思想
+
+```
+用户消息 → [Channel适配器] → [MessageBus] → [AgentLoop]
+                                                    ↓
+                                          [ContextBuilder] ← session历史 + memory + skills
+                                                    ↓
+                                          [LLMProvider.chat()]
+                                                    ↓
+                                          [工具调用循环] → 执行工具 → 追加结果 → 再次调用LLM
+                                                    ↓
+                                          最终回复 → [MessageBus] → [Channel适配器] → 用户
+```
+
+**核心设计模式**：
+- **消息总线（Bus）**：解耦各渠道与 Agent 核心
+- **工具注册表（ToolRegistry）**：插件式扩展工具能力
+- **提供商注册表（ProviderRegistry）**：2 步添加新 LLM 提供商
+- **Pydantic 配置**：强类型、自动验证的配置管理
+
+---
+
+## 四、Python 语法学习重点（来自项目代码）
+
+### 4.1 类型注解（Type Hints）
+```python
+# 来自 agent/loop.py
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
+
+def __init__(
+    self,
+    bus: MessageBus,          # 参数类型注解
+    model: str | None = None, # Python 3.10+ 联合类型写法（等价于 Optional[str]）
+    max_iterations: int = 40, # 有默认值的参数
+) -> None:                    # 返回值类型注解
+```
+
+### 4.2 异步编程（async/await）
+```python
+# 整个 Agent 基于 asyncio 异步架构
+async def run(self) -> None:
+    while self._running:
+        try:
+            msg = await asyncio.wait_for(         # await 等待异步操作完成
+                self.bus.consume_inbound(),
+                timeout=1.0                        # 超时设置
+            )
+        except asyncio.TimeoutError:
+            continue                               # 超时则继续等待
+
+    task = asyncio.create_task(self._dispatch(msg))  # 创建并发任务
+```
+
+### 4.3 dataclass / Pydantic 模型
+```python
+# pyproject.toml 显示使用 pydantic>=2.12.0
+# config/schema.py 中大量使用 Pydantic 定义配置结构
+class ProvidersConfig(BaseModel):        # 继承 BaseModel
+    openrouter: ProviderConfig = ProviderConfig()  # 带默认值的字段
+    anthropic: ProviderConfig = ProviderConfig()
+```
+
+### 4.4 上下文管理器（AsyncExitStack）
+```python
+# 管理多个异步资源的生命周期
+from contextlib import AsyncExitStack
+
+self._mcp_stack = AsyncExitStack()
+await self._mcp_stack.__aenter__()    # 进入上下文
+# ... 使用资源 ...
+await self._mcp_stack.aclose()        # 退出，自动清理所有资源
+```
+
+### 4.5 弱引用（weakref）
+```python
+import weakref
+# WeakValueDictionary: 值被垃圾回收时自动从字典删除，防止内存泄漏
+self._consolidation_locks: weakref.WeakValueDictionary[str, asyncio.Lock] = \
+    weakref.WeakValueDictionary()
+```
+
+### 4.6 静态方法与正则表达式
+```python
+@staticmethod                         # 不需要 self 的方法
+def _strip_think(text: str | None) -> str | None:
+    if not text:
+        return None
+    return re.sub(r"<think>[\s\S]*?</think>", "", text).strip() or None
+    #      ↑ 正则替换    ↑ 非贪婪匹配             ↑ 空字符串转 None
+```
+
+### 4.7 f-string 和日志
+```python
+from loguru import logger              # 第三方日志库
+
+logger.info("Tool call: {}({})", tool_call.name, args_str[:200])
+# loguru 用 {} 占位，不用 %s 或 f-string（性能更好，懒求值）
+
+# 字符串切片防止日志过长：args_str[:200]
+```
+
+### 4.8 字典推导和生成器表达式
+```python
+tool_call_dicts = [
+    {
+        "id": tc.id,
+        "type": "function",
+        "function": {
+            "name": tc.name,
+            "arguments": json.dumps(tc.arguments, ensure_ascii=False)
+            #                                      ↑ 保留中文字符不转义
+        }
+    }
+    for tc in response.tool_calls    # 列表推导式
+]
+```
+
+---
+
+## 五、Git & GitHub 学习路径
+
+### 5.1 基础概念（结合本项目）
+
+| Git 概念 | 在 nanobot 中的体现 |
+|---------|-------------------|
+| **Repository（仓库）** | `e:\Agent\nanobot\.git` 目录就是仓库数据库 |
+| **.gitignore** | 项目根目录下，忽略 `.venv/`、`*.pyc`、`__pycache__/` 等 |
+| **Commit（提交）** | 每次功能更新都有对应 commit，如 README 中的 News 日志 |
+| **Branch（分支）** | 可通过 `git branch` 查看本地分支 |
+| **Remote（远端）** | `origin` 指向 `https://github.com/HKUDS/nanobot` |
+
+### 5.2 常用命令（可直接在项目中练习）
+
+```bash
+# 查看当前状态
+git status
+
+# 查看提交历史（最近10条）
+git log --oneline -10
+
+# 查看某文件的修改历史
+git log --oneline nanobot/agent/loop.py
+
+# 查看远端仓库信息
+git remote -v
+
+# 拉取最新代码（nanobot 更新很频繁！）
+git pull origin main
+
+# 查看两个版本之间的差异
+git diff HEAD~1 HEAD -- nanobot/agent/loop.py
+
+# 创建并切换到新分支（学习用）
+git checkout -b my-learning-branch
+
+# 查看所有标签（对应 README 中的版本号）
+git tag --list
+```
+
+### 5.3 GitHub 特有功能
+
+| 功能 | 说明 | nanobot 示例 |
+|------|------|------------|
+| **Issues** | 问题追踪、功能请求 | 可以查看 nanobot 的 Issues 页面 |
+| **Pull Request（PR）** | 代码审查流程 | 贡献者通过 PR 提交改进 |
+| **Releases** | 版本发布 | README 中提到 v0.1.4.post3 等 |
+| **README.md** | 项目文档首页 | nanobot 的 README 是很好的范本 |
+| **Actions** | CI/CD 自动化 | 自动测试、发布流程 |
+
+---
+
+## 六、建议的学习顺序
+
+### 阶段一：理解项目入口（1-2天）
+1. 阅读 `pyproject.toml` — 了解项目依赖和入口命令
+2. 阅读 `README.md` — 理解项目用途和配置
+3. 阅读 `nanobot/__init__.py` 和 `__main__.py`
+
+### 阶段二：核心 Agent 流程（3-5天）
+1. `nanobot/bus/` — 消息总线
+2. `nanobot/agent/loop.py` — **最核心文件**，Agent 主循环
+3. `nanobot/agent/context.py` — 上下文构建
+4. `nanobot/agent/memory.py` — 记忆管理
+
+### 阶段三：可扩展模块（1周）
+1. `nanobot/channels/base.py` — 渠道基类（学习抽象类设计）
+2. `nanobot/channels/telegram.py` — 具体实现对比基类
+3. `nanobot/providers/registry.py` — 查看如何用 2 步添加新提供商
+4. `nanobot/config/schema.py` — Pydantic 配置设计
+
+### 阶段四：Git 实践（持续进行）
+1. 观察项目更新：`git pull` 后用 `git log` 查看改了什么
+2. 阅读 commits：理解每次改动的目的
+3. 尝试修改：改一个小功能，用 `git diff` 查看改动
+
+---
+
+## 七、提问示例（新对话时可直接复用）
+
+```
+我在学习 nanobot 项目（e:\Agent\nanobot），目标是学习 Git/GitHub、
+Python 语法和项目架构。请帮我解释 nanobot/agent/loop.py 中的
+AgentLoop._run_agent_loop 方法，重点讲解其中用到的 Python 异步语法。
+```
+
+---
+
+*本文档生成于 2026-03-02，基于 nanobot v0.1.4.post3*
