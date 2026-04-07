@@ -313,6 +313,15 @@ class MCPServerConfig(Base):
     tool_timeout: int = 30  # Seconds before a tool call is cancelled
 
 
+class ResearchConfig(Base):
+    """Research mode configuration."""
+
+    max_search_rounds: int = 3
+    default_shortlist_size: int = 3
+    max_ideas_per_gap: int = 3
+    min_papers_for_gaps: int = 3
+
+
 class ToolsConfig(Base):
     """Tools configuration."""
 
@@ -330,6 +339,7 @@ class Config(BaseSettings):
     providers: ProvidersConfig = Field(default_factory=ProvidersConfig)
     gateway: GatewayConfig = Field(default_factory=GatewayConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
+    research: ResearchConfig = Field(default_factory=ResearchConfig)
 
     @property
     def workspace_path(self) -> Path:

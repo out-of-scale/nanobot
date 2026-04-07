@@ -19,5 +19,8 @@ __pycache__/
 node_modules/
 poetry.lock
 .pytest_cache/
+.tmp_pytest/
+.tmp_pytest_cache/
+pytest-cache-files-*/
 botpy.log
 tests/

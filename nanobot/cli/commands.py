@@ -8,6 +8,7 @@ import sys        #系统相关参数和函数
 from pathlib import Path  #路径操作
 
 import typer   # 把普通函数变成 CLI 命令行工具
+
 # 提供有历史记录、颜色提示符的交互式输入框
 from prompt_toolkit import PromptSession    
 # 格式化文本
@@ -16,6 +17,7 @@ from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import FileHistory
 # 补丁标准输出
 from prompt_toolkit.patch_stdout import patch_stdout
+
 # 终端里输出带颜色、表格、Markdown 的漂亮文字
 from rich.console import Console
 # Markdown 渲染
@@ -231,6 +233,403 @@ def onboard():
     console.print("     Get one at: https://openrouter.ai/keys")
     console.print("  2. Chat: [cyan]nanobot agent -m \"Hello!\"[/cyan]")
     console.print("\n[dim]Want Telegram/WhatsApp? See: https://github.com/HKUDS/nanobot#-chat-apps[/dim]")
+
+
+@app.command("research-init")
+def research_init(
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace path"),
+    topic: str = typer.Option(None, "--topic", "-t", help="Research topic or problem statement"),
+):
+    """Bootstrap a workspace for interactive research and idea discovery."""
+    from nanobot.config.loader import load_config
+    from nanobot.research.workspace import ResearchWorkspaceService
+
+    if workspace:
+        workspace_path = Path(workspace).expanduser()
+    else:
+        workspace_path = load_config().workspace_path
+
+    service = ResearchWorkspaceService(workspace_path)
+    result = service.initialize(topic=topic)
+
+    console.print(f"[green]Research workspace ready:[/green] {result.workspace}")
+    if result.created_directories:
+        console.print("\nCreated directories:")
+        for relative in result.created_directories:
+            console.print(f"  [dim]- {relative}[/dim]")
+    if result.created_files:
+        console.print("\nCreated files:")
+        for relative in result.created_files:
+            console.print(f"  [dim]- {relative}[/dim]")
+    if not result.created_directories and not result.created_files:
+        console.print("[yellow]No changes were needed.[/yellow]")
+
+
+@app.command("research-status")
+def research_status(
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Research workspace path"),
+):
+    """Show the current research workspace state: stage, card counts, and next steps."""
+    from nanobot.config.loader import load_config
+    from nanobot.research.workflow import ResearchWorkflowResolver
+
+    config = load_config()
+    workspace_path = Path(workspace).expanduser() if workspace else config.workspace_path
+
+    if not (workspace_path / "RESEARCH.md").exists():
+        console.print("[yellow]No research workspace found at this path.[/yellow]")
+        console.print(f"  Run [cyan]nanobot research-init --workspace {workspace_path}[/cyan] to create one.")
+        raise typer.Exit(1)
+
+    state = ResearchWorkflowResolver(workspace_path).resolve()
+
+    console.print(f"{__logo__} Research Status\n")
+
+    table = Table(title="Research State")
+    table.add_column("Metric", style="cyan")
+    table.add_column("Value", style="white")
+
+    table.add_row("Workspace", str(workspace_path))
+    table.add_row("Current Stage", f"[bold]{state.stage}[/bold]")
+    table.add_row("Problem", state.problem.title if state.problem else "[dim]unresolved[/dim]")
+    table.add_row("Paper Cards", str(len(state.papers)))
+    table.add_row("Gap Cards", str(len(state.gaps)))
+    table.add_row("Idea Cards", str(len(state.ideas)))
+    shortlisted = [i for i in state.ideas if i.status == "shortlisted"]
+    table.add_row("Shortlisted Ideas", str(len(shortlisted)))
+    table.add_row("Decisions", str(len(state.decisions)))
+    console.print(table)
+
+    if state.rollback_reason:
+        console.print(f"\n[yellow]Rollback:[/yellow] {state.rollback_reason}")
+
+    if state.missing_prerequisites:
+        console.print("\n[yellow]Missing prerequisites:[/yellow]")
+        for item in state.missing_prerequisites:
+            console.print(f"  - {item}")
+
+    console.print(f"\n[green]Suggested next step:[/green] run the [cyan]{state.stage}[/cyan] stage.")
+
+
+@app.command("research-scout")
+def research_scout(
+    topic: str = typer.Option(..., "--topic", "-t", help="Research topic"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Workspace path"),
+    objective: str = typer.Option("", "--objective", help="Research objective"),
+    dataset: str = typer.Option("", "--dataset", help="Dataset or benchmark name"),
+    metric: str = typer.Option("", "--metric", help="Primary metric"),
+    focus: list[str] = typer.Option(None, "--focus", help="Focus term, repeatable"),
+    baseline: list[str] = typer.Option(None, "--baseline", help="Baseline name, repeatable"),
+    max_queries: int = typer.Option(4, "--max-queries", min=1, max=6, help="Maximum expanded search queries"),
+    count: int = typer.Option(5, "--count", min=1, max=10, help="Results per expanded query"),
+    digest_limit: int = typer.Option(5, "--digest-limit", min=0, max=10, help="How many top results to digest into paper cards"),
+):
+    """Run one bounded scout pass and persist framing plus literature outputs."""
+    from nanobot.config.loader import load_config
+    from nanobot.research.scout import ScoutInputs, ScoutService
+
+    config = load_config()
+    workspace_path = Path(workspace).expanduser() if workspace else config.workspace_path
+    service = ScoutService(
+        workspace_path,
+        api_key=config.tools.web.search.api_key or None,
+        proxy=config.tools.web.proxy or None,
+    )
+    result = asyncio.run(
+        service.run(
+            ScoutInputs(
+                topic=topic,
+                objective=objective,
+                dataset=dataset,
+                metric=metric,
+                focus_terms=focus or [],
+                baselines=baseline or [],
+                max_queries=max_queries,
+                count_per_query=count,
+                digest_limit=digest_limit,
+            )
+        )
+    )
+
+    console.print(f"[green]Research scout finished:[/green] {workspace_path}")
+    console.print(f"  Next anchor: [cyan]{result.next_anchor}[/cyan]")
+    console.print(f"  Query expansions: [cyan]{len(result.query_expansions)}[/cyan]")
+    console.print(f"  Saved paper cards: [cyan]{len(result.saved_cards)}[/cyan]")
+    console.print(f"  Saved artifacts: [cyan]{len(result.saved_artifacts)}[/cyan]")
+    if result.unresolved:
+        console.print("\nUnresolved scout questions:")
+        for item in result.unresolved:
+            console.print(f"  [yellow]- {item}[/yellow]")
+
+
+@app.command("research-gaps")
+def research_gaps(
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Research workspace path"),
+    max_gaps: int = typer.Option(4, "--max-gaps", min=1, max=8, help="Maximum number of gap cards to keep"),
+):
+    """Synthesize evidence-backed research gaps from saved paper cards."""
+    from nanobot.config.loader import load_config
+    from nanobot.research.gaps import GapSynthesisInputs, GapSynthesisService
+    from nanobot.research.workspace import ResearchWorkspaceService
+
+    config = load_config()
+    workspace_path = Path(workspace).expanduser() if workspace else config.workspace_path
+    ResearchWorkspaceService(workspace_path).initialize()
+    result = GapSynthesisService(workspace_path).run(GapSynthesisInputs(max_gaps=max_gaps))
+
+    console.print(f"[green]Research gaps synthesized:[/green] {workspace_path}")
+    console.print(f"  Gap cards: [cyan]{len(result.saved_cards)}[/cyan]")
+    console.print(f"  Artifacts: [cyan]{len(result.saved_artifacts)}[/cyan]")
+    console.print(f"  Next anchor: [cyan]{result.next_anchor}[/cyan]")
+
+
+@app.command("research-ideas")
+def research_ideas(
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Research workspace path"),
+    max_ideas: int = typer.Option(5, "--max-ideas", min=1, max=10, help="Maximum number of candidate ideas to generate"),
+):
+    """Generate candidate innovation ideas from saved gap cards."""
+    from nanobot.config.loader import load_config
+    from nanobot.research.ideas import IdeaGenerationInputs, IdeaGenerationService
+    from nanobot.research.workspace import ResearchWorkspaceService
+
+    config = load_config()
+    workspace_path = Path(workspace).expanduser() if workspace else config.workspace_path
+    ResearchWorkspaceService(workspace_path).initialize()
+    result = IdeaGenerationService(workspace_path).run(IdeaGenerationInputs(max_ideas=max_ideas))
+
+    console.print(f"[green]Research ideas generated:[/green] {workspace_path}")
+    console.print(f"  Idea cards: [cyan]{len(result.saved_cards)}[/cyan]")
+    console.print(f"  Artifacts: [cyan]{len(result.saved_artifacts)}[/cyan]")
+    console.print(f"  Next anchor: [cyan]{result.next_anchor}[/cyan]")
+
+
+@app.command("research-shortlist")
+def research_shortlist(
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Research workspace path"),
+    top_k: int = typer.Option(3, "--top-k", min=1, max=5, help="How many ideas to keep in the shortlist"),
+):
+    """Critique current candidate ideas and persist a shortlist plus brief."""
+    from nanobot.config.loader import load_config
+    from nanobot.research.ideas import IdeaCritiqueInputs, IdeaCritiqueService
+    from nanobot.research.workspace import ResearchWorkspaceService
+
+    config = load_config()
+    workspace_path = Path(workspace).expanduser() if workspace else config.workspace_path
+    ResearchWorkspaceService(workspace_path).initialize()
+    result = IdeaCritiqueService(workspace_path).run(IdeaCritiqueInputs(shortlist_size=top_k))
+
+    console.print(f"[green]Research shortlist ready:[/green] {workspace_path}")
+    console.print(f"  Shortlisted ideas: [cyan]{len(result.shortlisted_ids)}[/cyan]")
+    console.print(f"  Saved cards: [cyan]{len(result.saved_cards)}[/cyan]")
+    console.print(f"  Saved artifacts: [cyan]{len(result.saved_artifacts)}[/cyan]")
+    console.print(f"  Next anchor: [cyan]{result.next_anchor}[/cyan]")
+
+
+@app.command()
+def research(
+    message: str = typer.Option(None, "--message", "-m", help="Message to send to the research agent"),
+    topic: str = typer.Option(None, "--topic", "-t", help="Research topic for workspace bootstrap"),
+    workspace: str = typer.Option(None, "--workspace", "-w", help="Research workspace path"),
+    session_id: str = typer.Option("cli:research", "--session", "-s", help="Session ID"),
+    markdown: bool = typer.Option(True, "--markdown/--no-markdown", help="Render assistant output as Markdown"),
+    logs: bool = typer.Option(False, "--logs/--no-logs", help="Show nanobot runtime logs during chat"),
+    resume: bool = typer.Option(False, "--resume", help="Show current research state before entering interactive mode"),
+):
+    """Interact with nanobot in research mode using the research-focused tool profile."""
+    from loguru import logger
+
+    from nanobot.agent.loop import AgentLoop
+    from nanobot.bus.events import InboundMessage
+    from nanobot.bus.queue import MessageBus
+    from nanobot.config.loader import load_config
+    from nanobot.research.workflow import ResearchWorkflowResolver
+    from nanobot.research.workspace import ResearchWorkspaceService
+
+    config = load_config()
+    research_workspace = Path(workspace).expanduser() if workspace else config.workspace_path
+    ResearchWorkspaceService(research_workspace).initialize(topic=topic)
+
+    if resume:
+        state = ResearchWorkflowResolver(research_workspace).resolve()
+        console.print(f"{__logo__} Resuming research workspace: {research_workspace}")
+        console.print(f"  Stage: [cyan]{state.stage}[/cyan]")
+        console.print(f"  Problem: {state.problem.title if state.problem else '[dim]unresolved[/dim]'}")
+        console.print(f"  Papers: {len(state.papers)}  Gaps: {len(state.gaps)}  Ideas: {len(state.ideas)}")
+        if state.rollback_reason:
+            console.print(f"  [yellow]Rollback: {state.rollback_reason}[/yellow]")
+        if state.missing_prerequisites:
+            for item in state.missing_prerequisites:
+                console.print(f"  [yellow]Missing: {item}[/yellow]")
+        console.print()
+
+    if logs:
+        logger.enable("nanobot")
+    else:
+        logger.disable("nanobot")
+
+    bus = MessageBus()
+    provider = _make_provider(config)
+    agent_loop = AgentLoop(
+        bus=bus,
+        provider=provider,
+        workspace=research_workspace,
+        model=config.agents.defaults.model,
+        temperature=config.agents.defaults.temperature,
+        max_tokens=config.agents.defaults.max_tokens,
+        max_iterations=config.agents.defaults.max_tool_iterations,
+        memory_window=config.agents.defaults.memory_window,
+        reasoning_effort=config.agents.defaults.reasoning_effort,
+        brave_api_key=config.tools.web.search.api_key or None,
+        web_proxy=config.tools.web.proxy or None,
+        exec_config=config.tools.exec,
+        restrict_to_workspace=config.tools.restrict_to_workspace,
+        mcp_servers=config.tools.mcp_servers,
+        channels_config=config.channels,
+        tool_profile="research",
+    )
+    def _resolve_research_skills() -> list[str]:
+        return ResearchWorkflowResolver(research_workspace).resolve().skill_names
+
+    def _thinking_ctx():
+        if logs:
+            from contextlib import nullcontext
+            return nullcontext()
+        return console.status("[dim]nanobot research is thinking...[/dim]", spinner="dots")
+
+    async def _cli_progress(content: str, *, tool_hint: bool = False) -> None:
+        ch = agent_loop.channels_config
+        if ch and tool_hint and not ch.send_tool_hints:
+            return
+        if ch and not tool_hint and not ch.send_progress:
+            return
+        console.print(f"  [dim]-> {content}[/dim]")
+
+    if message:
+        async def run_once():
+            with _thinking_ctx():
+                response = await agent_loop.process_direct(
+                    message,
+                    session_key=session_id,
+                    on_progress=_cli_progress,
+                    skill_names=_resolve_research_skills(),
+                )
+            _print_agent_response(response, render_markdown=markdown)
+            await agent_loop.close_mcp()
+
+        asyncio.run(run_once())
+        return
+
+    _init_prompt_session()
+    console.print(f"{__logo__} Research mode (type [bold]exit[/bold] or [bold]Ctrl+C[/bold] to quit)\n")
+
+    # Stage-aware conversation opener
+    _state = ResearchWorkflowResolver(research_workspace).resolve()
+    _topic = _state.problem.title if _state.problem else (topic or "your topic")
+    _n_papers = len(_state.papers)
+    _n_gaps = len(_state.gaps)
+    _n_ideas = len(_state.ideas)
+    _n_shortlisted = len([i for i in _state.ideas if i.status == "shortlisted"])
+    _stage_openers: dict[str, str] = {
+        "scout-lite": f"I'll search for papers on '{_topic}'. What specific aspects should I prioritize?",
+        "gap-finder": f"I have {_n_papers} paper(s). Ready to extract research gaps — are there particular failure modes to focus on?",
+        "idea-miner": f"I found {_n_gaps} research gap(s). Any constraints on ideas to generate (compute budget, theory-only, etc.)?",
+        "idea-critic": f"I have {_n_ideas} candidate idea(s). About to shortlist — any you'd like to prioritize or rule out?",
+        "decision-lite": f"I have {_n_shortlisted} shortlisted idea(s). Which direction do you want to commit to?",
+    }
+    _opener = _stage_openers.get(_state.stage, f"Research workspace ready. Current stage: {_state.stage}.")
+    console.print(f"[cyan]{_opener}[/cyan]\n")
+
+    if ":" in session_id:
+        cli_channel, cli_chat_id = session_id.split(":", 1)
+    else:
+        cli_channel, cli_chat_id = "cli", session_id
+
+    agent_loop.sessions.get_or_create(session_id).metadata["skill_names"] = _resolve_research_skills()
+
+    def _exit_on_sigint(signum, frame):
+        _restore_terminal()
+        console.print("\nGoodbye!")
+        os._exit(0)
+
+    signal.signal(signal.SIGINT, _exit_on_sigint)
+
+    async def run_interactive():
+        bus_task = asyncio.create_task(agent_loop.run())
+        turn_done = asyncio.Event()
+        turn_done.set()
+        turn_response: list[str] = []
+
+        async def _consume_outbound():
+            while True:
+                try:
+                    msg = await asyncio.wait_for(bus.consume_outbound(), timeout=1.0)
+                    if msg.metadata.get("_progress"):
+                        is_tool_hint = msg.metadata.get("_tool_hint", False)
+                        ch = agent_loop.channels_config
+                        if ch and is_tool_hint and not ch.send_tool_hints:
+                            pass
+                        elif ch and not is_tool_hint and not ch.send_progress:
+                            pass
+                        else:
+                            console.print(f"  [dim]-> {msg.content}[/dim]")
+                    elif not turn_done.is_set():
+                        if msg.content:
+                            turn_response.append(msg.content)
+                        turn_done.set()
+                    elif msg.content:
+                        console.print()
+                        _print_agent_response(msg.content, render_markdown=markdown)
+                except asyncio.TimeoutError:
+                    continue
+                except asyncio.CancelledError:
+                    break
+
+        outbound_task = asyncio.create_task(_consume_outbound())
+
+        try:
+            while True:
+                try:
+                    _flush_pending_tty_input()
+                    user_input = await _read_interactive_input_async()
+                    command = user_input.strip()
+                    if not command:
+                        continue
+                    if _is_exit_command(command):
+                        _restore_terminal()
+                        console.print("\nGoodbye!")
+                        break
+
+                    turn_done.clear()
+                    turn_response.clear()
+                    agent_loop.sessions.get_or_create(session_id).metadata["skill_names"] = _resolve_research_skills()
+
+                    await bus.publish_inbound(InboundMessage(
+                        channel=cli_channel,
+                        sender_id="user",
+                        chat_id=cli_chat_id,
+                        content=user_input,
+                    ))
+
+                    with _thinking_ctx():
+                        await turn_done.wait()
+
+                    if turn_response:
+                        _print_agent_response(turn_response[0], render_markdown=markdown)
+                except KeyboardInterrupt:
+                    _restore_terminal()
+                    console.print("\nGoodbye!")
+                    break
+                except EOFError:
+                    _restore_terminal()
+                    console.print("\nGoodbye!")
+                    break
+        finally:
+            outbound_task.cancel()
+            bus_task.cancel()
+            await agent_loop.close_mcp()
+
+    asyncio.run(run_interactive())
 
 
 
